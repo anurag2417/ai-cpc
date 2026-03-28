@@ -5,6 +5,21 @@ import type { ParentAgentSettingsDTO } from "@/lib/parent/defaults";
 import { COMMON_IANA_TIMEZONES } from "@/lib/parent/timezones";
 import { TOPIC_MODES, type TopicMode } from "@/lib/parent/topics";
 
+const CHILD_AGE_BANDS = [
+  { value: "under_5", label: "Under 5" },
+  { value: "age_5_7", label: "Ages 5–7" },
+  { value: "age_8_10", label: "Ages 8–10" },
+  { value: "age_11_12", label: "Ages 11–12" },
+  { value: "age_13_15", label: "Ages 13–15" },
+  { value: "age_16_17", label: "Ages 16–17" },
+] as const;
+
+type MeRow = {
+  is_parent_verified: boolean;
+  parent_verified_at: string | null;
+  verification_method: string | null;
+};
+
 type AlertRow = {
   id: string;
   alert_kind: "high_distress" | "loneliness";
@@ -37,6 +52,27 @@ export default function ParentDashboardPage() {
 
   const [alerts, setAlerts] = useState<AlertRow[]>([]);
   const [alertsLoading, setAlertsLoading] = useState(true);
+
+  const [me, setMe] = useState<MeRow | null>(null);
+  const [childAgeBand, setChildAgeBand] = useState<string>("age_5_7");
+  const [childSubmitError, setChildSubmitError] = useState<string | null>(null);
+  const [childSubmitOk, setChildSubmitOk] = useState(false);
+  const [childSubmitting, setChildSubmitting] = useState(false);
+
+  const loadMe = useCallback(async () => {
+    try {
+      const res = await fetch("/api/parent/me", { credentials: "same-origin" });
+      if (res.status === 401) {
+        setMe(null);
+        return;
+      }
+      if (!res.ok) return;
+      const data = (await res.json()) as MeRow;
+      setMe(data);
+    } catch {
+      setMe(null);
+    }
+  }, []);
 
   const loadSettings = useCallback(async () => {
     setLoading(true);
@@ -85,6 +121,10 @@ export default function ParentDashboardPage() {
   }, [loadSettings]);
 
   useEffect(() => {
+    void loadMe();
+  }, [loadMe]);
+
+  useEffect(() => {
     void loadAlerts();
   }, [loadAlerts]);
 
@@ -94,6 +134,29 @@ export default function ParentDashboardPage() {
     }, 30_000);
     return () => window.clearInterval(id);
   }, [loadAlerts]);
+
+  const submitChild = async () => {
+    setChildSubmitting(true);
+    setChildSubmitError(null);
+    setChildSubmitOk(false);
+    try {
+      const res = await fetch("/api/parent/children", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ age_band: childAgeBand }),
+      });
+      const body = (await res.json()) as { error?: string; detail?: string };
+      if (!res.ok) {
+        throw new Error(body.detail ?? body.error ?? "Could not create child");
+      }
+      setChildSubmitOk(true);
+    } catch (e) {
+      setChildSubmitError(e instanceof Error ? e.message : "Failed");
+    } finally {
+      setChildSubmitting(false);
+    }
+  };
 
   const updateTopic = (topic: TopicMode, enabled: boolean) => {
     setSettings((prev) => {
@@ -207,6 +270,24 @@ export default function ParentDashboardPage() {
           diagnosis—use them to start a conversation with your child.
         </p>
       </header>
+
+      {me && !me.is_parent_verified ? (
+        <div className="mb-8 rounded-2xl border border-amber-200 bg-amber-50 p-5 dark:border-amber-900 dark:bg-amber-950/40">
+          <p className="font-medium text-amber-900 dark:text-amber-100">
+            Verifiable parental consent required
+          </p>
+          <p className="mt-2 text-sm text-amber-800 dark:text-amber-200">
+            Verify that you are an adult before adding a child profile. Child accounts are
+            blocked until this step is complete.
+          </p>
+          <a
+            href="/parent/verify"
+            className="mt-4 inline-flex rounded-full bg-amber-900 px-5 py-2.5 text-sm font-medium text-white hover:bg-amber-800 dark:bg-amber-200 dark:text-amber-950 dark:hover:bg-amber-100"
+          >
+            Complete verification
+          </a>
+        </div>
+      ) : null}
 
       <section className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
         <div className="flex flex-wrap items-start justify-between gap-4">
@@ -332,6 +413,48 @@ export default function ParentDashboardPage() {
           <span className="text-sm text-red-600 dark:text-red-400">{saveError}</span>
         ) : null}
       </div>
+
+      {me?.is_parent_verified ? (
+        <section className="mt-10 rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+          <h2 className="text-lg font-medium">Add a child profile</h2>
+          <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
+            Creates a pseudonymous child record (no name or contact). You can add more
+            profiles later with different display ordinals via the API.
+          </p>
+          <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-end">
+            <label className="flex flex-col gap-1 text-sm">
+              <span className="font-medium text-zinc-700 dark:text-zinc-300">Age band</span>
+              <select
+                className="rounded-lg border border-zinc-300 bg-white px-3 py-2 dark:border-zinc-700 dark:bg-zinc-950"
+                value={childAgeBand}
+                onChange={(e) => setChildAgeBand(e.target.value)}
+              >
+                {CHILD_AGE_BANDS.map((b) => (
+                  <option key={b.value} value={b.value}>
+                    {b.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button
+              type="button"
+              disabled={childSubmitting}
+              onClick={() => void submitChild()}
+              className="rounded-full bg-zinc-900 px-5 py-2.5 text-sm font-medium text-white hover:bg-zinc-800 disabled:opacity-60 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-white"
+            >
+              {childSubmitting ? "Creating…" : "Create child profile"}
+            </button>
+          </div>
+          {childSubmitError ? (
+            <p className="mt-3 text-sm text-red-600 dark:text-red-400">{childSubmitError}</p>
+          ) : null}
+          {childSubmitOk ? (
+            <p className="mt-3 text-sm text-emerald-700 dark:text-emerald-400">
+              Child profile created.
+            </p>
+          ) : null}
+        </section>
+      ) : null}
 
       <section className="mt-10 rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
         <div className="flex flex-wrap items-center justify-between gap-2">
